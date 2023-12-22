@@ -6,6 +6,8 @@ import argparse
 from dimod import ConstrainedQuadraticModel, Binary, Integer, SampleSet
 from dwave.system import LeapHybridCQMSampler
 import pandas as pd
+import numpy as np
+
 
 import sys
 sys.path.append('./src')
@@ -15,18 +17,17 @@ import utils.mip_solver as mip_solver
 from model_data import JobShopData
 from utils.greedy import GreedyJobShop
 
-class JobShopSchedulingCQM():
+class JobShopSchedulingAssignmentCQM():
     """Builds and solves a Job Shop Scheduling problem using CQM.
     """
-    def __init__(self, model_data: JobShopData, max_makespan: int = None):
+    def __init__(self, model_data: JobShopData, random_samples: dict):
         """Initializes the JobShopSchedulingCQM class.
 
         Args:
             model_data (JobShopData): A JobShopData object that holds the data 
                 for this job shop scheduling problem.
-            max_makespan (int, optional): Upperbound on how long the schedule 
-                can be; leave as None to naively auto-calculate an appropriate 
-                value.
+            random_samples: a dictionary of task start times for each task, in
+                the form {task: set(start_times)}
         """        
         self.model_data = model_data
         self.cqm = None
@@ -36,9 +37,7 @@ class JobShopSchedulingCQM():
         self.best_sample = {}
         self.solution = {}
         self.completion_time = 0
-        self.max_makespan = max_makespan
-        if self.max_makespan is None:
-            self.max_makespan = model_data.get_max_makespan()
+        self.random_samples = random_samples
 
 
     def define_cqm_model(self) -> None:
@@ -53,29 +52,31 @@ class JobShopSchedulingCQM():
             model_data: a JobShopData data class
         """
         # Define make span as an integer variable
-        self.makespan = Integer("makespan", lower_bound=0,upper_bound=self.max_makespan)
+        # makespan_lower_bound = int(min([max(v)[1] for v in self.random_samples.values()]) * .9)
+        makespan_lower_bound = 0
+        makespan_upper_bounds = max([max(v)[1] for v in self.random_samples.values()])
+        self.makespan = Integer("makespan", lower_bound=makespan_lower_bound, upper_bound=makespan_upper_bounds)
+        self.cqm.add_variable('INTEGER', 'makespan',  lower_bound=makespan_lower_bound, upper_bound=makespan_upper_bounds)
 
-        # Define integer variable for start time of using machine i for job j
+        # Define binary variable indicating whether task sample i is selected for task t
         self.x = {}
-        for job in model_data.jobs:
-            for resource in model_data.resources:
-                task = model_data.get_resource_job_tasks(job=job, resource=resource)
-                lb, ub = model_data.get_task_time_bounds(task, self.max_makespan)
-                self.x[(job, resource)] = Integer('x{}_{}'.format(job, resource), lower_bound=lb,
-                                         upper_bound=ub)
-
-        # Add binary variable which equals to 1 if job j precedes job k on
-        # machine i
-        self.y = {(j, k, i): Binary('y{}_{}_{}'.format(j, k, i))
-                  for j in model_data.jobs
-                  for k in model_data.jobs 
-                  for i in model_data.resources}
-
+        for task, start_times in self.random_samples.items():
+            for idx, start_time in enumerate(start_times):
+                var_name = 'x{}_{}'.format(task, idx)
+                self.x[(task, idx)] = var_name
+                self.cqm.add_variable(vartype='BINARY', v=var_name)
+                # self.cqm.add_variable('BINARY', self.x[(task, idx)])
 
     def define_objective_function(self) -> None:
         """Define objective function, which is to minimize
         the makespan of the schedule."""
-        self.cqm.set_objective(self.makespan)
+        self.cqm.set_objective([('makespan', 1)])
+        # last_job_vars = []
+        # for job in self.model_data.jobs:
+        #     last_job_task = self.model_data.job_tasks[job][-1]
+        #     # last_job_ends = [self.random_samples[last_job_task][idx][1] for idx in range(len(self.random_samples[last_job_task]))]
+        #     last_job_vars.extend([('x{}_{}'.format(last_job_task, idx), finish) for idx, (_, finish) in enumerate(self.random_samples[last_job_task])])
+        # self.cqm.set_objective(last_job_vars)
 
 
     def add_precedence_constraints(self, model_data: JobShopData) -> None:
@@ -87,12 +88,15 @@ class JobShopSchedulingCQM():
         """
         for job in model_data.jobs:  # job
             for prev_task, curr_task in zip(model_data.job_tasks[job][:-1], model_data.job_tasks[job][1:]):
-                machine_curr = curr_task.resource
-                machine_prev = prev_task.resource
-                self.cqm.add_constraint(self.x[(job, machine_curr)] -
-                                        self.x[(job, machine_prev)]
-                                        >= prev_task.duration,
-                                        label='pj{}_m{}'.format(job, machine_curr))
+
+                for idx in range(len(self.random_samples[curr_task])):
+                    
+                    start = self.random_samples[curr_task][idx][0]
+                    invalid_prev_idcs = [i for i, prev_times in enumerate(self.random_samples[prev_task]) if prev_times[1] > start]
+                    if len(invalid_prev_idcs) > 0:
+                        prec_constraint = [('x{}_{}'.format(prev_task, prev_task_idx), 'x{}_{}'.format(curr_task, idx), 1) \
+                                           for prev_task_idx in invalid_prev_idcs]
+                        self.cqm.add_constraint_from_iterable(prec_constraint, label='prec_ctr{}_{}'.format(curr_task, idx), sense='==', rhs=0)
 
 
     def add_quadratic_overlap_constraint(self, model_data: JobShopData) -> None:
@@ -108,39 +112,19 @@ class JobShopSchedulingCQM():
                     for i in model_data.resources:
                         task_k = model_data.get_resource_job_tasks(job=k, resource=i)
                         task_j = model_data.get_resource_job_tasks(job=j, resource=i)
-
-                        if task_k.duration > 0 and task_j.duration > 0:
-                            self.cqm.add_constraint(
-                                self.x[(j, i)] - self.x[(k, i)] + (
-                                        task_k.duration - task_j.duration) \
-                                         * self.y[(j, k, i)] + 2 * self.y[(j, k, i)] * (
-                                        self.x[(k, i)] - self.x[(j, i)]) >=
-                                        task_k.duration,
-                                label='OneJobj{}_j{}_m{}'.format(j, k, i))
-                            
-
-    def add_disjunctive_constraints(self, model_data: JobShopData) -> None:
-        """This function adds the disjunctive constraints the prevent two jobs
-        from being scheduled on the same machine at the same time. This is a
-        non-quadratic alternative to the quadratic overlap constraint.
-
-        Args:
-            model_data (JobShopData): The data for the job shop scheduling
-        """        
-        V = self.max_makespan
-        for j in model_data.jobs:
-            for k in model_data.jobs:
-                if j < k:
-                    for i in model_data.resources:
-                        task_k = model_data.get_resource_job_tasks(job=k, resource=i)
-                        self.cqm.add_constraint(
-                            self.x[(j, i)] - self.x[(k, i)] - task_k.duration + self.y[(j, k, i)] * V >= 0,
-                            label='disjunction1{}_j{}_m{}'.format(j, k, i))
-                        
-                        task_j = model_data.get_resource_job_tasks(job=j, resource=i)
-                        self.cqm.add_constraint(
-                            self.x[(k, i)] - self.x[(j, i)] - task_j.duration + (1-self.y[(j, k, i)]) * V >= 0,
-                            label='disjunction2{}_j{}_m{}'.format(j, k, i))
+                        k_times = self.random_samples[task_k]
+                        j_times = self.random_samples[task_j]
+                        for k_idx, k_time in enumerate(k_times):
+                            overlaps = []
+                            for j_idx, j_time in enumerate(j_times):
+                                if k_time[1] > j_time[0] and k_time[0] < j_time[1]:
+                                    overlaps.append(j_idx)
+                                elif j_time[1] > k_time[0] and j_time[0] < k_time[1]:
+                                    overlaps.append(j_idx)
+                                    
+                            if len(overlaps) > 0:
+                                constraint = [('x{}_{}'.format(task_j, j_idx), 'x{}_{}'.format(task_k, k_idx), 1) for j_idx in overlaps]
+                                self.cqm.add_constraint_from_iterable(constraint, label='overlap_ctr{}_{}_{}'.format(task_j, task_k, k_idx), sense='==', rhs=0)
 
 
     def add_makespan_constraint(self, model_data: JobShopData) -> None:
@@ -152,10 +136,24 @@ class JobShopSchedulingCQM():
         """
         for job in model_data.jobs:
             last_job_task = model_data.job_tasks[job][-1]
-            last_machine = last_job_task.resource
-            self.cqm.add_constraint(
-                self.makespan - self.x[(job, last_machine)] >= last_job_task.duration,
-                label='makespan_ctr{}'.format(job))
+            # last_job_ends = [self.random_samples[last_job_task][idx][1] for idx in range(len(self.random_samples[last_job_task]))]
+            last_job_vars = [('x{}_{}'.format(last_job_task, idx), -finish) for idx, (_, finish) in enumerate(self.random_samples[last_job_task])]
+            last_job_vars.append(('makespan', 1))
+            self.cqm.add_constraint_from_iterable(last_job_vars, label='makespan_ctr{}'.format(job), sense='>=', rhs=0)
+            # for idx, task_time in enumerate((self.random_samples[last_job_task])):
+            
+            #     self.cqm.add_constraint(
+            #     [('makespan', 1), ('x{}_{}'.format(last_job_task, idx),-task_time[1])],
+            #     rhs=0, sense='>=',
+            #     label='makespan_ctr{}_{}'.format(job, idx))
+
+    
+    def choose_one_sample(self) -> None:
+        """Ensures that exactly one sample is chosen for each task."""
+        for task in self.random_samples.keys():
+            self.cqm.add_constraint_from_iterable([('x{}_{}'.format(task, idx), 1) for idx in range(len(self.random_samples[task]))],
+                                                  rhs=1, sense='==',
+                                                  label='choose_one_ctr{}'.format(task))
 
 
     def call_cqm_solver(self, time_limit: int, model_data: JobShopData, profile: str) -> None:
@@ -169,7 +167,7 @@ class JobShopSchedulingCQM():
             https://docs.ocean.dwavesys.com/en/stable/docs_cloud/reference/generated/dwave.cloud.config.load_config.html#dwave.cloud.config.load_config
         """
         sampler = LeapHybridCQMSampler(profile=profile)
-        raw_sampleset = sampler.sample_cqm(self.cqm, time_limit=time_limit, label='Job Shop Demo')
+        raw_sampleset = sampler.sample_cqm(self.cqm, time_limit=time_limit, label='Job Shop Assignment')
         self.feasible_sampleset = raw_sampleset.filter(lambda d: d.is_feasible)
         num_feasible = len(self.feasible_sampleset)
         if num_feasible > 0:
@@ -184,40 +182,16 @@ class JobShopSchedulingCQM():
 
         self.best_sample = best_samples.first.sample
 
-        self.solution = {
-            (j, i): (model_data.get_resource_job_tasks(job=j, resource=i),
-                     self.best_sample[self.x[(j, i)].variables[0]],
-                     model_data.get_resource_job_tasks(job=j, resource=i).duration)
-            for i in model_data.resources for j in model_data.jobs}
-
-        self.completion_time = self.best_sample['makespan']
-
-
-    def call_mip_solver(self, time_limit: int=100) -> SampleSet:
-        """This function calls the MIP solver and returns the solution
-
-        Args:
-            time_limit (int, optional): The maximum amount of time to
-            allow the MIP solver to before returning. Defaults to 100.
-
-        Returns:
-            SampleSet: The solution to the problem from the MIP solver,
-                or an empty SampleSet if no solution was found.
-        """        
-        solver = mip_solver.MIPCQMSolver()
-        sol = solver.sample_cqm(cqm=self.cqm, time_limit=time_limit)
         self.solution = {}
-        if len(sol) == 0:
-            warnings.warn("Warning: Did not find feasible solution")
-            return self.solution
-        best_sol = sol.first.sample
-        
-        for (var, val) in best_sol.items():
+        for var, var_name in self.x.items():
+            val = self.best_sample[var_name]
+            if val == 1:
+                self.solution[var[0]] = self.random_samples[var[0]][var[1]]
 
-            if var.startswith('x'):
-                job, machine = var[1:].split('_')
-                task = self.model_data.get_resource_job_tasks(job=job, resource=machine)
-                self.solution[(job, machine)] = task, val, task.duration
+        self.completion_time = max([v[1] for v in self.solution.values()])
+        print ('Completion time: {}'.format(self.completion_time))
+        return self.completion_time
+
 
     
     def solution_as_dataframe(self) -> pd.DataFrame:
@@ -233,16 +207,34 @@ class JobShopSchedulingCQM():
         return df
     
 
+def generate_random_greedy_samples(job_data: JobShopData, num_samples: int=100) -> dict:
+    start = time()
+    solutions = []
+    task_times = {task: set() for task in job_data.get_tasks()}
+    for x in range(num_samples):
+        greedy = GreedyJobShop(job_data)
+        task_assignments = greedy.solve()
+        [task_times[task].add(task_assignments[task]) for task in job_data.get_tasks()]
+        solutions.append(max([v[1] for k,v in task_assignments.items()]))
+    
+    end = time()
+    print('Generated {} samples in {} seconds'.format(num_samples, end-start))
+    best_greedy = min(solutions)
+    print ('Best greedy solution: {}'.format(best_greedy))
+    import pdb
+    pdb.set_trace()
+    task_times = {task: list(task_time) for task, task_time in task_times.items()}
+    return task_times, best_greedy
+    
+
 def run_shop_scheduler(
     job_data: JobShopData,
     solver_time_limit: int = 60,
-    use_mip_solver: bool = False,
     verbose: bool = False,
-    allow_quadratic_constraints: bool = True,
     out_sol_file: str = None,
     out_plot_file: str = None,
     profile: str = None,
-    max_makespan: int = None
+    num_trials: int=100
     ) -> pd.DataFrame:
     """This function runs the job shop scheduler on the given data.
 
@@ -254,8 +246,6 @@ def run_shop_scheduler(
         use_mip_solver (bool, optional): Whether to use the MIP solver instead of the CQM solver.
             Defaults to False.
         verbose (bool, optional): Whether to print verbose output. Defaults to False.
-        allow_quadratic_constraints (bool, optional): Whether to allow quadratic constraints. 
-            Defaults to True.
         out_sol_file (str, optional): Path to the output solution file. Defaults to None.
         out_plot_file (str, optional): Path to the output plot file. Defaults to None.
         profile (str, optional): The profile variable to pass to the Sampler. Defaults to None.
@@ -264,24 +254,15 @@ def run_shop_scheduler(
         pd.DataFrame: A DataFrame that has the following columns: Task, Start, Finish, and
         Resource.
     """    
-    greedy = GreedyJobShop(job_data)
-    df = greedy.solve()
-    solution = {}
-    for task, (start, end) in df.items():
-        solution[(task.job, task.resource)] = task, start, task.duration
-    df = greedy.solution_as_dataframe(solution)
-    return df
-    if allow_quadratic_constraints and use_mip_solver:
-        raise ValueError("Cannot use quadratic constraints with MIP solver")
+    greedy_samples, best_greedy = generate_random_greedy_samples(job_data, num_samples=num_trials)
+
     model_building_start = time()
-    model = JobShopSchedulingCQM(model_data=job_data, max_makespan=max_makespan)
+    model = JobShopSchedulingAssignmentCQM(model_data=job_data, random_samples=greedy_samples)
     model.define_cqm_model()
     model.define_variables(job_data)
     model.add_precedence_constraints(job_data)
-    if allow_quadratic_constraints:
-        model.add_quadratic_overlap_constraint(job_data)
-    else:
-        model.add_disjunctive_constraints(job_data)
+    model.add_quadratic_overlap_constraint(job_data)
+    model.choose_one_sample()
     model.add_makespan_constraint(job_data)
     model.define_objective_function()
 
@@ -289,11 +270,10 @@ def run_shop_scheduler(
         print_cqm_stats(model.cqm)
     model_building_time = time() - model_building_start
     solver_start_time = time()
-    if use_mip_solver:
-        sol = model.call_mip_solver(time_limit=solver_time_limit)
-    else:
-        model.call_cqm_solver(time_limit=solver_time_limit, model_data=job_data, profile=profile)
-        sol = model.best_sample
+
+    completion_time = model.call_cqm_solver(time_limit=solver_time_limit, model_data=job_data, profile=profile)
+    return completion_time, best_greedy
+    sol = model.best_sample
     solver_time = time() - solver_start_time
 
     if verbose:
@@ -345,22 +325,13 @@ if __name__ == "__main__":
                         help='path to the output plot file',
                         default='output/schedule.png')
     
-    parser.add_argument('-use_mip_solver', action='store_true',
-                        help='Whether to use the MIP solver instead of the CQM solver')
-    
     parser.add_argument('-verbose', action='store_true', default=True,
                         help='Whether to print verbose output')
-    
-    parser.add_argument('-allow_quad', action='store_true',
-                        help='Whether to allow quadratic constraints')
     
     parser.add_argument('-profile', type=str,
                         help='The profile variable to pass to the Sampler. Defaults to None.',
                         default=None)
     
-    parser.add_argument('-max_makespan', type=int,
-                        help='Upperbound on how long the schedule can be; leave empty to auto-calculate an appropriate value.',
-                        default=None)
     
     # Parse input arguments.
     args = parser.parse_args()
@@ -368,11 +339,18 @@ if __name__ == "__main__":
     time_limit = args.tl
     out_plot_file = args.op
     out_sol_file = args.os
-    allow_quadratic_constraints = args.allow_quad
 
     job_data = JobShopData()
     job_data.load_from_file(input_file)
 
-    results = run_shop_scheduler(job_data, time_limit, verbose=args.verbose, use_mip_solver=args.use_mip_solver,
-                          allow_quadratic_constraints=allow_quadratic_constraints, profile=args.profile,
-                          max_makespan=args.max_makespan)
+    completion_times = []
+    greedy_times = []
+    for i in range(100):
+        completion_time, greedy_time = run_shop_scheduler(job_data, time_limit, verbose=args.verbose, profile=args.profile, num_trials=2000)
+        completion_times.append(completion_time)
+        greedy_times.append(greedy_time)
+        print ('done with iteration {}'.format(i))
+        print ('completion time: {}'.format(completion_time))
+        print ('greedy time: {}'.format(greedy_time))
+    import pdb
+    pdb.set_trace()

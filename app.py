@@ -58,7 +58,7 @@ SCENARIOS = {
     '15x15': "taillard15_15.txt",
     '20x15': "instance20_15.txt",
     '20x25': "instance20_25.txt",
-    '30x30': "instance30_30.txt"
+    '30x20': "taillard30_20.txt"
 }
 
 MODEL_OPTIONS = {
