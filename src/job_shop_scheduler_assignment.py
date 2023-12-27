@@ -94,8 +94,11 @@ class JobShopSchedulingAssignmentCQM():
                     start = self.random_samples[curr_task][idx][0]
                     invalid_prev_idcs = [i for i, prev_times in enumerate(self.random_samples[prev_task]) if prev_times[1] > start]
                     if len(invalid_prev_idcs) > 0:
-                        prec_constraint = [('x{}_{}'.format(prev_task, prev_task_idx), 'x{}_{}'.format(curr_task, idx), 1) \
-                                           for prev_task_idx in invalid_prev_idcs]
+                        # prec_constraint = [('x{}_{}'.format(prev_task, prev_task_idx), 'x{}_{}'.format(curr_task, idx), 1) \
+                        #                    for prev_task_idx in invalid_prev_idcs]
+                        prec_constraint = []
+                        for prev_task_idx in invalid_prev_idcs:
+                            prec_constraint.append(('x{}_{}'.format(prev_task, prev_task_idx), 'x{}_{}'.format(curr_task, idx), 1))
                         self.cqm.add_constraint_from_iterable(prec_constraint, label='prec_ctr{}_{}'.format(curr_task, idx), sense='==', rhs=0)
 
 
@@ -122,8 +125,11 @@ class JobShopSchedulingAssignmentCQM():
                                 elif j_time[1] > k_time[0] and j_time[0] < k_time[1]:
                                     overlaps.append(j_idx)
                                     
+                            # constraint = [('x{}_{}'.format(task_k, k_idx), 1)]
                             if len(overlaps) > 0:
-                                constraint = [('x{}_{}'.format(task_j, j_idx), 1), ('x{}_{}'.format(task_k, k_idx), 1) for j_idx in overlaps]
+                                constraint = []
+                                for j_idx in overlaps:
+                                    constraint.append(('x{}_{}'.format(task_j, j_idx), 'x{}_{}'.format(task_k, k_idx), 1))
                                 self.cqm.add_constraint_from_iterable(constraint, label='overlap_ctr{}_{}_{}'.format(task_j, task_k, k_idx), sense='==', rhs=0)
 
 
@@ -221,8 +227,6 @@ def generate_random_greedy_samples(job_data: JobShopData, num_samples: int=100) 
     print('Generated {} samples in {} seconds'.format(num_samples, end-start))
     best_greedy = min(solutions)
     print ('Best greedy solution: {}'.format(best_greedy))
-    import pdb
-    pdb.set_trace()
     task_times = {task: list(task_time) for task, task_time in task_times.items()}
     return task_times, best_greedy
     
@@ -346,11 +350,11 @@ if __name__ == "__main__":
     completion_times = []
     greedy_times = []
     for i in range(100):
-        completion_time, greedy_time = run_shop_scheduler(job_data, time_limit, verbose=args.verbose, profile=args.profile, num_trials=2000)
+        completion_time, greedy_time = run_shop_scheduler(job_data, time_limit, verbose=args.verbose, profile=args.profile, num_trials=100)
         completion_times.append(completion_time)
         greedy_times.append(greedy_time)
         print ('done with iteration {}'.format(i))
         print ('completion time: {}'.format(completion_time))
         print ('greedy time: {}'.format(greedy_time))
-    import pdb
-    pdb.set_trace()
+        import pdb
+        pdb.set_trace()

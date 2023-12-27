@@ -63,7 +63,7 @@ class GreedyJobShop:
         while sum(not_yet_finished) > 0:
             # job = random.choice(unfinished_jobs)
             #skip with prob 0.1
-            if np.random.rand() < 0.2:
+            if np.random.rand() < 0.1:
                 idx += 1
                 continue
             job = unfinished_jobs[idx % len(unfinished_jobs)]
