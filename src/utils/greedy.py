@@ -54,20 +54,25 @@ class GreedyJobShop:
         self.last_task_scheduled = {job: -1 for job in self.model_data.jobs}
         self.task_assignments = {}
         unfinished_jobs = [x for x in self.model_data.jobs]
-        
+        remaining_task_times = {job: self.model_data.get_total_job_time(job) for job in self.model_data.jobs}
+        max_remaining_task_time = max([x for x in remaining_task_times.values()])
         unfinished_jobs = np.array([x for x in self.model_data.jobs])
         np.random.shuffle(unfinished_jobs)
         not_yet_finished = np.ones(len(unfinished_jobs))
         idx = 0
         while sum(not_yet_finished) > 0:
             #skip with prob 0.1
-            if np.random.rand() < 0.1:
-                idx += 1
-                continue
+
             job = unfinished_jobs[idx % len(unfinished_jobs)]
             if not_yet_finished[idx % len(unfinished_jobs)] == 0:
                 idx += 1
                 continue
+            if np.random.rand() < max(0.02, 1 - remaining_task_times[job] / max_remaining_task_time):
+                idx += 1
+                continue
+            # if np.random.rand() < 0.1:
+            #     idx += 1
+            #     continue
             task = self.model_data.job_tasks[job][self.last_task_scheduled[job] + 1]
             resource = task.resource
 
@@ -91,6 +96,8 @@ class GreedyJobShop:
                 # unfinished_jobs.remove(job)
                 not_yet_finished[idx % len(unfinished_jobs)] = 0
             idx += 1
+            remaining_task_times[job] -= task.duration
+            max_remaining_task_time = max([x for x in remaining_task_times.values()])
             # if idx % len(unfinished_jobs) == 0:
             #     new_order = [x for x in range(len(unfinished_jobs))]
             #     np.random.shuffle(new_order)
@@ -167,7 +174,7 @@ if __name__ == "__main__":
     start = time.time()
     solutions = []
     task_start_times = {task: set() for task in job_data.get_tasks()}
-    for x in range(1000):
+    for x in range(200):
         greedy = GreedyJobShop(job_data)
         task_assignments = greedy.solve()
         [task_start_times[task].add(task_assignments[task][0]) for task in job_data.get_tasks()]
