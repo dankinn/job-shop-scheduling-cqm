@@ -2,7 +2,6 @@
 This file will greedily generate a solution for the job shop problem
 '''
 import argparse
-import random
 import numpy as np
 import time
 
@@ -61,7 +60,6 @@ class GreedyJobShop:
         not_yet_finished = np.ones(len(unfinished_jobs))
         idx = 0
         while sum(not_yet_finished) > 0:
-            # job = random.choice(unfinished_jobs)
             #skip with prob 0.1
             if np.random.rand() < 0.1:
                 idx += 1
