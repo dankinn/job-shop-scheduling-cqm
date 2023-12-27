@@ -123,7 +123,7 @@ class JobShopSchedulingAssignmentCQM():
                                     overlaps.append(j_idx)
                                     
                             if len(overlaps) > 0:
-                                constraint = [('x{}_{}'.format(task_j, j_idx), 'x{}_{}'.format(task_k, k_idx), 1) for j_idx in overlaps]
+                                constraint = [('x{}_{}'.format(task_j, j_idx), 1), ('x{}_{}'.format(task_k, k_idx), 1) for j_idx in overlaps]
                                 self.cqm.add_constraint_from_iterable(constraint, label='overlap_ctr{}_{}_{}'.format(task_j, task_k, k_idx), sense='==', rhs=0)
 
 
