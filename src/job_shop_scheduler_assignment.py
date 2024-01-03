@@ -198,7 +198,6 @@ class JobShopSchedulingAssignmentCQM():
         print ('Completion time: {}'.format(self.completion_time))
         return self.completion_time
 
-
     
     def solution_as_dataframe(self) -> pd.DataFrame:
         """This function returns the solution as a pandas DataFrame
@@ -259,6 +258,9 @@ def run_shop_scheduler(
         Resource.
     """    
     greedy_samples, best_greedy = generate_random_greedy_samples(job_data, num_samples=num_trials)
+    for task in greedy_samples.keys():
+        _, upper_bound = job_data.get_task_time_bounds(task, best_greedy)
+        greedy_samples[task] = [x for x in greedy_samples[task] if x[0] <= upper_bound]
 
     model_building_start = time()
     model = JobShopSchedulingAssignmentCQM(model_data=job_data, random_samples=greedy_samples)
@@ -350,7 +352,7 @@ if __name__ == "__main__":
     completion_times = []
     greedy_times = []
     for i in range(100):
-        completion_time, greedy_time = run_shop_scheduler(job_data, time_limit, verbose=args.verbose, profile=args.profile, num_trials=100)
+        completion_time, greedy_time = run_shop_scheduler(job_data, time_limit, verbose=args.verbose, profile=args.profile, num_trials=25)
         completion_times.append(completion_time)
         greedy_times.append(greedy_time)
         print ('done with iteration {}'.format(i))

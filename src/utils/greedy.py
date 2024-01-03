@@ -67,12 +67,12 @@ class GreedyJobShop:
             if not_yet_finished[idx % len(unfinished_jobs)] == 0:
                 idx += 1
                 continue
-            if np.random.rand() < max(0.02, 1 - remaining_task_times[job] / max_remaining_task_time):
-                idx += 1
-                continue
-            # if np.random.rand() < 0.1:
+            # if np.random.rand() < max(0.2, 1 - remaining_task_times[job] / max_remaining_task_time):
             #     idx += 1
             #     continue
+            if np.random.rand() < 0.08:
+                idx += 1
+                continue
             task = self.model_data.job_tasks[job][self.last_task_scheduled[job] + 1]
             resource = task.resource
 
