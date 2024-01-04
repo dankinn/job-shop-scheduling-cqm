@@ -11,9 +11,7 @@ import numpy as np
 
 import sys
 sys.path.append('./src')
-from utils.utils import print_cqm_stats, write_solution_to_file
-import utils.plot_schedule as job_plotter
-import utils.mip_solver as mip_solver
+from utils.utils import print_cqm_stats
 from model_data import JobShopData
 from utils.greedy import GreedyJobShop
 
@@ -33,7 +31,6 @@ class JobShopSchedulingAssignmentCQM():
         self.cqm = None
         self.x = {}
         self.y = {}
-        self.makespan = {}
         self.best_sample = {}
         self.solution = {}
         self.completion_time = 0
@@ -45,38 +42,27 @@ class JobShopSchedulingAssignmentCQM():
         self.cqm = ConstrainedQuadraticModel()
 
 
-    def define_variables(self, model_data: JobShopData) -> None:
+    def define_variables(self) -> None:
         """Define CQM variables.
-
-        Args:
-            model_data: a JobShopData data class
         """
         # Define make span as an integer variable
         makespan_lower_bound = int(min([max(v)[1] for v in self.random_samples.values()]) * .8)
-        # makespan_lower_bound = 0
         makespan_upper_bounds = max([max(v)[1] for v in self.random_samples.values()])
-        self.makespan = Integer("makespan", lower_bound=makespan_lower_bound, upper_bound=makespan_upper_bounds)
         self.cqm.add_variable('INTEGER', 'makespan',  lower_bound=makespan_lower_bound, upper_bound=makespan_upper_bounds)
 
         # Define binary variable indicating whether task sample i is selected for task t
         self.x = {}
         for task, start_times in self.random_samples.items():
-            for idx, start_time in enumerate(start_times):
+            for idx, _ in enumerate(start_times):
                 var_name = 'x{}_{}'.format(task, idx)
                 self.x[(task, idx)] = var_name
                 self.cqm.add_variable(vartype='BINARY', v=var_name)
-                # self.cqm.add_variable('BINARY', self.x[(task, idx)])
+
 
     def define_objective_function(self) -> None:
         """Define objective function, which is to minimize
         the makespan of the schedule."""
         self.cqm.set_objective([('makespan', 1)])
-        # last_job_vars = []
-        # for job in self.model_data.jobs:
-        #     last_job_task = self.model_data.job_tasks[job][-1]
-        #     # last_job_ends = [self.random_samples[last_job_task][idx][1] for idx in range(len(self.random_samples[last_job_task]))]
-        #     last_job_vars.extend([('x{}_{}'.format(last_job_task, idx), finish) for idx, (_, finish) in enumerate(self.random_samples[last_job_task])])
-        # self.cqm.set_objective(last_job_vars)
 
 
     def add_precedence_constraints(self, model_data: JobShopData) -> None:
@@ -87,7 +73,7 @@ class JobShopSchedulingAssignmentCQM():
             model_data: a JobShopData data class
         """
         prec_count = 0
-        for job in model_data.jobs:  # job
+        for job in model_data.jobs: 
             for prev_task, curr_task in zip(model_data.job_tasks[job][:-1], model_data.job_tasks[job][1:]):
 
                 for idx in range(len(self.random_samples[curr_task])):
@@ -95,8 +81,6 @@ class JobShopSchedulingAssignmentCQM():
                     start = self.random_samples[curr_task][idx][0]
                     invalid_prev_idcs = [i for i, prev_times in enumerate(self.random_samples[prev_task]) if prev_times[1] > start]
                     if len(invalid_prev_idcs) > 0:
-                        # prec_constraint = [('x{}_{}'.format(prev_task, prev_task_idx), 'x{}_{}'.format(curr_task, idx), 1) \
-                        #                    for prev_task_idx in invalid_prev_idcs]
                         prec_constraint = []
                         for prev_task_idx in invalid_prev_idcs:
                             prec_constraint.append(('x{}_{}'.format(prev_task, prev_task_idx), 'x{}_{}'.format(curr_task, idx), 1))
@@ -129,7 +113,6 @@ class JobShopSchedulingAssignmentCQM():
                                 elif j_time[1] > k_time[0] and j_time[0] < k_time[1]:
                                     overlaps.append(j_idx)
                                     
-                            # constraint = [('x{}_{}'.format(task_k, k_idx), 1)]
                             if len(overlaps) > 0:
                                 constraint = []
                                 for j_idx in overlaps:
@@ -185,7 +168,6 @@ class JobShopSchedulingAssignmentCQM():
 
         print(" \n" + "=" * 30 + "BEST SAMPLE SET" + "=" * 30)
         print(best_samples)
-
         self.best_sample = best_samples.first.sample
         self.solution = {}
         for var, var_name in self.x.items():
@@ -279,7 +261,7 @@ def run_shop_scheduler(
     model_building_start = time()
     model = JobShopSchedulingAssignmentCQM(model_data=job_data, random_samples=greedy_samples)
     model.define_cqm_model()
-    model.define_variables(job_data)
+    model.define_variables()
     model.add_precedence_constraints(job_data)
     model.add_quadratic_overlap_constraint(job_data)
     model.choose_one_sample()
@@ -340,7 +322,6 @@ if __name__ == "__main__":
                         help='The % of samples to keep, between 0 and 1. Defaults to 1.',
                         default=0.01)
     
-    # Parse input arguments.
     args = parser.parse_args()
     input_file = args.instance
     time_limit = args.tl
