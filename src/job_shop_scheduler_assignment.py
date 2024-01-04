@@ -52,8 +52,8 @@ class JobShopSchedulingAssignmentCQM():
             model_data: a JobShopData data class
         """
         # Define make span as an integer variable
-        # makespan_lower_bound = int(min([max(v)[1] for v in self.random_samples.values()]) * .9)
-        makespan_lower_bound = 0
+        makespan_lower_bound = int(min([max(v)[1] for v in self.random_samples.values()]) * .8)
+        # makespan_lower_bound = 0
         makespan_upper_bounds = max([max(v)[1] for v in self.random_samples.values()])
         self.makespan = Integer("makespan", lower_bound=makespan_lower_bound, upper_bound=makespan_upper_bounds)
         self.cqm.add_variable('INTEGER', 'makespan',  lower_bound=makespan_lower_bound, upper_bound=makespan_upper_bounds)
@@ -86,6 +86,7 @@ class JobShopSchedulingAssignmentCQM():
         Args:
             model_data: a JobShopData data class
         """
+        prec_count = 0
         for job in model_data.jobs:  # job
             for prev_task, curr_task in zip(model_data.job_tasks[job][:-1], model_data.job_tasks[job][1:]):
 
@@ -99,7 +100,9 @@ class JobShopSchedulingAssignmentCQM():
                         prec_constraint = []
                         for prev_task_idx in invalid_prev_idcs:
                             prec_constraint.append(('x{}_{}'.format(prev_task, prev_task_idx), 'x{}_{}'.format(curr_task, idx), 1))
+                        prec_count += 1
                         self.cqm.add_constraint_from_iterable(prec_constraint, label='prec_ctr{}_{}'.format(curr_task, idx), sense='==', rhs=0)
+        print ('Added {} precedence constraints'.format(prec_count))
 
 
     def add_quadratic_overlap_constraint(self, model_data: JobShopData) -> None:
@@ -109,6 +112,7 @@ class JobShopSchedulingAssignmentCQM():
          Args:
              model_data: a JobShopData data class
         """
+        overlap_count = 0
         for j in model_data.jobs:
             for k in model_data.jobs:
                 if j < k:
@@ -130,7 +134,9 @@ class JobShopSchedulingAssignmentCQM():
                                 constraint = []
                                 for j_idx in overlaps:
                                     constraint.append(('x{}_{}'.format(task_j, j_idx), 'x{}_{}'.format(task_k, k_idx), 1))
+                                overlap_count += 1
                                 self.cqm.add_constraint_from_iterable(constraint, label='overlap_ctr{}_{}_{}'.format(task_j, task_k, k_idx), sense='==', rhs=0)
+        print ('Added {} overlap constraints'.format(overlap_count))
 
 
     def add_makespan_constraint(self, model_data: JobShopData) -> None:
@@ -142,32 +148,23 @@ class JobShopSchedulingAssignmentCQM():
         """
         for job in model_data.jobs:
             last_job_task = model_data.job_tasks[job][-1]
-            # last_job_ends = [self.random_samples[last_job_task][idx][1] for idx in range(len(self.random_samples[last_job_task]))]
             last_job_vars = [('x{}_{}'.format(last_job_task, idx), -finish) for idx, (_, finish) in enumerate(self.random_samples[last_job_task])]
             last_job_vars.append(('makespan', 1))
             self.cqm.add_constraint_from_iterable(last_job_vars, label='makespan_ctr{}'.format(job), sense='>=', rhs=0)
-            # for idx, task_time in enumerate((self.random_samples[last_job_task])):
-            
-            #     self.cqm.add_constraint(
-            #     [('makespan', 1), ('x{}_{}'.format(last_job_task, idx),-task_time[1])],
-            #     rhs=0, sense='>=',
-            #     label='makespan_ctr{}_{}'.format(job, idx))
 
     
     def choose_one_sample(self) -> None:
         """Ensures that exactly one sample is chosen for each task."""
         for task in self.random_samples.keys():
-            self.cqm.add_constraint_from_iterable([('x{}_{}'.format(task, idx), 1) for idx in range(len(self.random_samples[task]))],
-                                                  rhs=1, sense='==',
-                                                  label='choose_one_ctr{}'.format(task))
+            self.cqm.add_discrete_from_iterable(['x{}_{}'.format(task, idx) for idx in range(len(self.random_samples[task]))], 
+                                                label='choose_one_ctr{}'.format(task))
 
 
-    def call_cqm_solver(self, time_limit: int, model_data: JobShopData, profile: str) -> None:
-        """Calls CQM solver.
+    def call_cqm_solver(self, time_limit: int,  profile: str) -> None:
+        """Calls CQM solver to solve the job shop scheduling assignment problem.
 
         Args:
             time_limit (int): time limit in second
-            model_data (JobShopData): a JobShopData data class
             profile (str): The profile variable to pass to the Sampler. Defaults to None.
             See documentation at 
             https://docs.ocean.dwavesys.com/en/stable/docs_cloud/reference/generated/dwave.cloud.config.load_config.html#dwave.cloud.config.load_config
@@ -180,23 +177,24 @@ class JobShopSchedulingAssignmentCQM():
             best_samples = \
                 self.feasible_sampleset.truncate(min(10, num_feasible))
         else:
+            self.solution = {}
+            self.solution_makespan = -1
+            print ('\n\n No feasible solutions found. \n\n')
             warnings.warn("Warning: Did not find feasible solution")
-            best_samples = raw_sampleset.truncate(10)
+            return
 
         print(" \n" + "=" * 30 + "BEST SAMPLE SET" + "=" * 30)
         print(best_samples)
 
         self.best_sample = best_samples.first.sample
-
         self.solution = {}
         for var, var_name in self.x.items():
             val = self.best_sample[var_name]
             if val == 1:
                 self.solution[var[0]] = self.random_samples[var[0]][var[1]]
 
-        self.completion_time = max([v[1] for v in self.solution.values()])
-        print ('Completion time: {}'.format(self.completion_time))
-        return self.completion_time
+        self.solution_makespan = max([v[1] for v in self.solution.values()])
+
 
     
     def solution_as_dataframe(self) -> pd.DataFrame:
@@ -212,33 +210,52 @@ class JobShopSchedulingAssignmentCQM():
         return df
     
 
-def generate_random_greedy_samples(job_data: JobShopData, num_samples: int=100) -> dict:
+def generate_random_greedy_samples(job_data: JobShopData, num_samples: int=100, keep_pct=1) -> dict:
+    """This function generates random samples using the greedy algorithm; it will keep the
+    top keep_pct percent of samples.
+
+    Args:
+        job_data (JobShopData): An instance of the JobShopData class
+        num_samples (int, optional): The number of samples to take (number of times
+            the GreedyJobShop algorithm is run). Defaults to 100.
+        keep_pct (int, optional): The % of samples to keep, between 0 and 1. Defaults to 1.
+
+    Returns:
+        dict: A dictionary of task times, in the form {task: [start_time, end_time]}. Only
+            unique task times will be returned for each task.
+    """    
     start = time()
     solutions = []
-    task_times = {task: set() for task in job_data.get_tasks()}
-    for x in range(num_samples):
+    task_times = {task: [] for task in job_data.get_tasks()}
+    for _ in range(num_samples):
         greedy = GreedyJobShop(job_data)
         task_assignments = greedy.solve()
-        [task_times[task].add(task_assignments[task]) for task in job_data.get_tasks()]
-        solutions.append(max([v[1] for k,v in task_assignments.items()]))
-    
+        [task_times[task].append(task_assignments[task]) for task in job_data.get_tasks()]
+        solutions.append(max([v[1] for v in task_assignments.values()]))
     end = time()
+
+    sorted_solutions = [x for x in solutions]
+    sorted_solutions.sort()
+    kth_greedy = sorted_solutions[int(num_samples * keep_pct)]
+    keep_idcs = [i for i, x in enumerate(solutions) if x <= kth_greedy]
+    task_times = {task: [task_times[task][i] for i in keep_idcs] for task in job_data.get_tasks()}
+    best_greedy = min(solutions)
+
     print('Generated {} samples in {} seconds'.format(num_samples, end-start))
     best_greedy = min(solutions)
     print ('Best greedy solution: {}'.format(best_greedy))
-    task_times = {task: list(task_time) for task, task_time in task_times.items()}
+    task_times = {task: list(set(task_time)) for task, task_time in task_times.items()}
     return task_times, best_greedy
     
 
 def run_shop_scheduler(
     job_data: JobShopData,
     solver_time_limit: int = 60,
-    verbose: bool = False,
-    out_sol_file: str = None,
-    out_plot_file: str = None,
+    verbose: bool = True,
     profile: str = None,
-    num_trials: int=100
-    ) -> pd.DataFrame:
+    num_trials: int=100,
+    trial_keep_pct: float=0.01
+    ) -> None:
     """This function runs the job shop scheduler on the given data.
 
     Args:
@@ -248,16 +265,13 @@ def run_shop_scheduler(
             auto-calculate an appropriate value. Defaults to None.
         use_mip_solver (bool, optional): Whether to use the MIP solver instead of the CQM solver.
             Defaults to False.
-        verbose (bool, optional): Whether to print verbose output. Defaults to False.
-        out_sol_file (str, optional): Path to the output solution file. Defaults to None.
-        out_plot_file (str, optional): Path to the output plot file. Defaults to None.
+        verbose (bool, optional): Whether to print verbose output. Defaults to True.
         profile (str, optional): The profile variable to pass to the Sampler. Defaults to None.
+        num_trials (int, optional): The number of trials to run the greedy algorithm. Defaults to 100.
 
-    Returns:
-        pd.DataFrame: A DataFrame that has the following columns: Task, Start, Finish, and
-        Resource.
-    """    
-    greedy_samples, best_greedy = generate_random_greedy_samples(job_data, num_samples=num_trials)
+    """
+
+    greedy_samples, best_greedy = generate_random_greedy_samples(job_data, num_samples=int(num_trials/trial_keep_pct), keep_pct=trial_keep_pct)
     for task in greedy_samples.keys():
         _, upper_bound = job_data.get_task_time_bounds(task, best_greedy)
         greedy_samples[task] = [x for x in greedy_samples[task] if x[0] <= upper_bound]
@@ -277,43 +291,31 @@ def run_shop_scheduler(
     model_building_time = time() - model_building_start
     solver_start_time = time()
 
-    completion_time = model.call_cqm_solver(time_limit=solver_time_limit, model_data=job_data, profile=profile)
-    return completion_time, best_greedy
-    sol = model.best_sample
-    solver_time = time() - solver_start_time
+    model.call_cqm_solver(time_limit=solver_time_limit, profile=profile)
 
+    solver_time = time() - solver_start_time
     if verbose:
         print(" \n" + "=" * 55 + "SOLUTION RESULTS" + "=" * 55)
-        print(tabulate([["Completion Time", "Max Possible Make-Span",
+        print(tabulate([["Best CQM Makespan", "Best Greedy Makespan",
                         "Model Building Time (s)", "Solver Call Time (s)",
                         "Total Runtime (s)"],
-                        [model.completion_time, 
-                         model.max_makespan,
+                        [model.solution_makespan, 
+                         best_greedy,
                          int(model_building_time), 
                          int(solver_time),
                          int(solver_time +  model_building_time)
                          ]],
                     headers="firstrow"))
     
-    # Write solution to a file.
-    if out_sol_file is not None:
-        write_solution_to_file(
-            job_data, model.solution, model.completion_time, out_sol_file)
-
-    # Plot solution
-    if out_plot_file is not None:
-        job_plotter.plot_solution(job_data, model.solution, out_plot_file)
-
-    df = model.solution_as_dataframe()
-    return df
 
 
 if __name__ == "__main__":
-    """Modeling and solving Job Shop Scheduling using CQM solver."""
+    """Modeling and solving Job Shop Scheduling using CQM solver with the greedy
+    assignment method"""
 
     # Instantiate the parser
     parser = argparse.ArgumentParser(
-        description='Job Shop Scheduling Using LeapHybridCQMSampler',
+        description='Job Shop Scheduling Assignment Model Using LeapHybridCQMSampler',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument('-instance', type=str,
@@ -322,41 +324,33 @@ if __name__ == "__main__":
 
     parser.add_argument('-tl', type=int,
                         help='time limit in seconds')
-
-    parser.add_argument('-os', type=str,
-                        help='path to the output solution file',
-                        default='output/solution.txt')
-
-    parser.add_argument('-op', type=str,
-                        help='path to the output plot file',
-                        default='output/schedule.png')
     
-    parser.add_argument('-verbose', action='store_true', default=True,
-                        help='Whether to print verbose output')
+    parser.add_argument('-no_verbose', action='store_true', default=False,
+                        help='Whether to exclude verbose output')
     
     parser.add_argument('-profile', type=str,
                         help='The profile variable to pass to the Sampler. Defaults to None.',
                         default=None)
     
+    parser.add_argument('-num_trials', type=int,
+                        help='number of trials to run',
+                        default=100)
+    
+    parser.add_argument('-keep_pct', type=float,
+                        help='The % of samples to keep, between 0 and 1. Defaults to 1.',
+                        default=0.01)
     
     # Parse input arguments.
     args = parser.parse_args()
     input_file = args.instance
     time_limit = args.tl
-    out_plot_file = args.op
-    out_sol_file = args.os
 
     job_data = JobShopData()
     job_data.load_from_file(input_file)
 
-    completion_times = []
-    greedy_times = []
-    for i in range(100):
-        completion_time, greedy_time = run_shop_scheduler(job_data, time_limit, verbose=args.verbose, profile=args.profile, num_trials=25)
-        completion_times.append(completion_time)
-        greedy_times.append(greedy_time)
-        print ('done with iteration {}'.format(i))
-        print ('completion time: {}'.format(completion_time))
-        print ('greedy time: {}'.format(greedy_time))
-        import pdb
-        pdb.set_trace()
+    run_shop_scheduler(job_data,
+                       time_limit,
+                       verbose=not args.no_verbose,
+                       profile=args.profile,
+                       num_trials=args.num_trials,
+                       trial_keep_pct=args.keep_pct)

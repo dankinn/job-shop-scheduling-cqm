@@ -5,7 +5,6 @@ import argparse
 import numpy as np
 import time
 
-import pandas as pd
 import sys
 sys.path.append('./src')
 from model_data import JobShopData
@@ -22,26 +21,43 @@ class GreedyJobShop:
         self.model_data = model_data
     
 
-    def solve(self) -> dict:
+    def solve(self, skip_probability: float = 0.1) -> dict:
         '''
         This solves the job shop scheduling problem using the 
         following strategy:
         1. Randomly select a job with open tasks
         2. Select the first open task for that job
         3. Assing the task to its required resource at the earliest time
+            a. First check to see if there is a gap in the resource schedule; 
+                if so, assign the task to the start of the gap
+            b. If there is no gap, assign the task to the end of the resource
+                schedule
         4. Repeat until all tasks are assigned
+
+        Args:
+            skip_probability (float): The probability of skipping a job each iteration.
+                This is used to add randomness to the solution. Defaults to 0.1.
+        
+        Returns:
+            dict: A dictionary of task assignments. The keys are tasks and the values
+                are tuples of the start and finish times for the task.
         '''
-        def resource_gap_finder(resource_schedule: list, min_start: int, gap_duration: int):
+        def resource_gap_finder(resource_schedule: list,
+                                min_start: int,
+                                gap_duration: int) -> tuple:
             """helper function that checks to see if there is a gap in the 
             resource_schedule of at least gap_duration that starts after min_start
 
             Args:
-                resource_schedule (list): _description_
-                min_start (int): _description_
-                gap_duration (int): _description_
+                resource_schedule (list): The schedule of tasks currently assigned to the resource,
+                    sorted by start time. Each element is a dictionary with keys 'start', 'finish', 
+                    and 'task'
+                min_start (int): The earliest time that the task can start
+                gap_duration (int): The minimum gap duration that is needed to fit the task
 
             Returns:
-                _type_: _description_
+                tuple: A tuple of the earliest start time that the task can start and the position
+                    in the resource_schedule where the task should be inserted
             """            
             for i in range(len(resource_schedule) - 1):
                 if resource_schedule[i+1]['start'] > min_start and \
@@ -55,22 +71,18 @@ class GreedyJobShop:
         self.task_assignments = {}
         unfinished_jobs = [x for x in self.model_data.jobs]
         remaining_task_times = {job: self.model_data.get_total_job_time(job) for job in self.model_data.jobs}
-        max_remaining_task_time = max([x for x in remaining_task_times.values()])
         unfinished_jobs = np.array([x for x in self.model_data.jobs])
         np.random.shuffle(unfinished_jobs)
         not_yet_finished = np.ones(len(unfinished_jobs))
         idx = 0
         while sum(not_yet_finished) > 0:
-            #skip with prob 0.1
 
             job = unfinished_jobs[idx % len(unfinished_jobs)]
             if not_yet_finished[idx % len(unfinished_jobs)] == 0:
                 idx += 1
                 continue
-            # if np.random.rand() < max(0.2, 1 - remaining_task_times[job] / max_remaining_task_time):
-            #     idx += 1
-            #     continue
-            if np.random.rand() < 0.08:
+
+            if np.random.rand() < skip_probability:
                 idx += 1
                 continue
             task = self.model_data.job_tasks[job][self.last_task_scheduled[job] + 1]
@@ -93,80 +105,34 @@ class GreedyJobShop:
             self.task_assignments[task] = (start_time, finish_time)
             self.last_task_scheduled[job] += 1
             if self.last_task_scheduled[job] == len(self.model_data.job_tasks[job]) - 1:
-                # unfinished_jobs.remove(job)
                 not_yet_finished[idx % len(unfinished_jobs)] = 0
             idx += 1
             remaining_task_times[job] -= task.duration
-            max_remaining_task_time = max([x for x in remaining_task_times.values()])
-            # if idx % len(unfinished_jobs) == 0:
-            #     new_order = [x for x in range(len(unfinished_jobs))]
-            #     np.random.shuffle(new_order)
-            #     unfinished_jobs = unfinished_jobs[new_order]
-            #     not_yet_finished = not_yet_finished[new_order]
+
         return self.task_assignments
 
 
-    def solution_as_dataframe(self, solution) -> pd.DataFrame:
-        """This function returns the solution as a pandas DataFrame
-
-        Returns:
-            pd.DataFrame: A pandas DataFrame containing the solution
-        """        
-        df_rows = []
-        for (j, i), (task, start, dur) in solution.items():
-            df_rows.append([j, task, start, start + dur, i])
-        df = pd.DataFrame(df_rows, columns=['Job', 'Task', 'Start', 'Finish', 'Resource'])
-        return df
 
 
 if __name__ == "__main__":
-    """Modeling and solving Job Shop Scheduling using CQM solver."""
-
+    """Modeling and solving Job Shop Scheduling using the greedy solver."""
 
     # Instantiate the parser
     parser = argparse.ArgumentParser(
-        description='Job Shop Scheduling Using LeapHybridCQMSampler',
+        description='Job Shop Scheduling Using Greedy Solver',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument('-instance', type=str,
                         help='path to the input instance file; ',
                         default='input/instance5_5.txt')
 
-    parser.add_argument('-tl', type=int,
-                        help='time limit in seconds')
-
-    parser.add_argument('-os', type=str,
-                        help='path to the output solution file',
-                        default='output/solution.txt')
-
-    parser.add_argument('-op', type=str,
-                        help='path to the output plot file',
-                        default='output/schedule.png')
-    
-    parser.add_argument('-use_mip_solver', action='store_true',
-                        help='Whether to use the MIP solver instead of the CQM solver')
-    
-    parser.add_argument('-verbose', action='store_true', default=True,
-                        help='Whether to print verbose output')
-    
-    parser.add_argument('-allow_quad', action='store_true',
-                        help='Whether to allow quadratic constraints')
-    
-    parser.add_argument('-profile', type=str,
-                        help='The profile variable to pass to the Sampler. Defaults to None.',
-                        default=None)
-    
-    parser.add_argument('-max_makespan', type=int,
-                        help='Upperbound on how long the schedule can be; leave empty to auto-calculate an appropriate value.',
-                        default=None)
+    parser.add_argument('-num_trials', type=int,
+                        help='number of trials to run',
+                        default=1)
     
     # Parse input arguments.
     args = parser.parse_args()
     input_file = args.instance
-    time_limit = args.tl
-    out_plot_file = args.op
-    out_sol_file = args.os
-    allow_quadratic_constraints = args.allow_quad
 
     job_data = JobShopData()
     job_data.load_from_file(input_file)
@@ -174,12 +140,13 @@ if __name__ == "__main__":
     start = time.time()
     solutions = []
     task_start_times = {task: set() for task in job_data.get_tasks()}
-    for x in range(200):
+    for x in range(args.num_trials):
         greedy = GreedyJobShop(job_data)
         task_assignments = greedy.solve()
         [task_start_times[task].add(task_assignments[task][0]) for task in job_data.get_tasks()]
-        solutions.append(max([v[1] for k,v in task_assignments.items()]))
+        solutions.append(max([v[1] for v in task_assignments.values()]))
     end = time.time()
-    print(end - start)
-    import pdb
-    pdb.set_trace()
+    print('Average makespan: ', np.mean(solutions))
+    print ('Best makespan: ', min(solutions))
+    print('Completed {} trials in : {} seconds'.format(args.num_trials, np.round(end - start), 3))
+    print('Average run time per trial: {} seconds'.format(np.round((end - start) / args.num_trials, 3)))
