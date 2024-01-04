@@ -3,10 +3,9 @@ import warnings
 
 from tabulate import tabulate
 import argparse
-from dimod import ConstrainedQuadraticModel, Binary, Integer, SampleSet
+from dimod import ConstrainedQuadraticModel
 from dwave.system import LeapHybridCQMSampler
 import pandas as pd
-import numpy as np
 
 
 import sys
@@ -14,6 +13,7 @@ sys.path.append('./src')
 from utils.utils import print_cqm_stats
 from model_data import JobShopData
 from utils.greedy import GreedyJobShop
+
 
 class JobShopSchedulingAssignmentCQM():
     """Builds and solves a Job Shop Scheduling problem using CQM.
@@ -42,11 +42,16 @@ class JobShopSchedulingAssignmentCQM():
         self.cqm = ConstrainedQuadraticModel()
 
 
-    def define_variables(self) -> None:
+    def define_variables(self, lower_bound_pct: float=0.8) -> None:
         """Define CQM variables.
+
+        Args:
+            lower_bound_pct: lower bound of makespan as a percentage of the
+                best completion time found by the greedy algorithm; this 
+                value should be between 0 and 1.
         """
         # Define make span as an integer variable
-        makespan_lower_bound = int(min([max(v)[1] for v in self.random_samples.values()]) * .8)
+        makespan_lower_bound = int(min([max(v)[1] for v in self.random_samples.values()]) * lower_bound_pct)
         makespan_upper_bounds = max([max(v)[1] for v in self.random_samples.values()])
         self.cqm.add_variable('INTEGER', 'makespan',  lower_bound=makespan_lower_bound, upper_bound=makespan_upper_bounds)
 
@@ -177,7 +182,6 @@ class JobShopSchedulingAssignmentCQM():
 
         self.solution_makespan = max([v[1] for v in self.solution.values()])
 
-
     
     def solution_as_dataframe(self) -> pd.DataFrame:
         """This function returns the solution as a pandas DataFrame
@@ -216,9 +220,12 @@ def generate_random_greedy_samples(job_data: JobShopData, num_samples: int=100, 
         solutions.append(max([v[1] for v in task_assignments.values()]))
     end = time()
 
-    sorted_solutions = [x for x in solutions]
-    sorted_solutions.sort()
-    kth_greedy = sorted_solutions[int(num_samples * keep_pct)]
+    if keep_pct < 1:
+        sorted_solutions = [x for x in solutions]
+        sorted_solutions.sort()
+        kth_greedy = sorted_solutions[int(num_samples * keep_pct)]
+    else:
+        kth_greedy = max(solutions)
     keep_idcs = [i for i, x in enumerate(solutions) if x <= kth_greedy]
     task_times = {task: [task_times[task][i] for i in keep_idcs] for task in job_data.get_tasks()}
     best_greedy = min(solutions)
